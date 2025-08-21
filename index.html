@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>PDF Library — piratehive-commits/ollen</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b0d10; --fg:#e6e9ef; --muted:#9aa4b2; --accent:#4da3ff; --card:#13161a; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji'; background:var(--bg); color:var(--fg); }
+    header { padding:16px 20px; border-bottom:1px solid #1d2228; position:sticky; top:0; background:var(--bg); z-index:10; }
+    header h1 { margin:0 0 8px; font-size:18px; }
+    header .url { font-size:12px; color:var(--muted); word-break:break-all; }
+    #wrap { display:grid; grid-template-columns: 360px 1fr; gap:16px; padding:16px; min-height: calc(100vh - 68px); }
+    #left, #right { background:var(--card); border:1px solid #1d2228; border-radius:14px; overflow:auto; }
+    #left { padding:14px; }
+    #right { display:flex; flex-direction:column; }
+    #searchBox { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #27303a; background:#0f1216; color:var(--fg); outline:none; }
+    #tree { margin-top:12px; }
+    details { padding:6px 6px; border-radius:10px; }
+    summary { cursor:pointer; list-style:none; display:flex; align-items:center; gap:8px; }
+    summary::marker { display:none; }
+    .folder { font-weight:600; }
+    ul { list-style:none; margin:4px 0 0 18px; padding:0; }
+    li.file { padding:4px 0; }
+    a.filelink { text-decoration:none; color:var(--fg); }
+    a.filelink:hover { color:var(--accent); }
+    .muted { color:var(--muted); font-size:12px; }
+    #results { margin-top:12px; border-top:1px dashed #27303a; padding-top:8px; }
+    #viewerBar { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #1d2228; }
+    #viewerBar .path { font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:80%; }
+    #viewer { flex:1; width:100%; border:0; }
+    #help { padding:14px; font-size:14px; color:var(--muted); }
+    .btn { background:#0f1216; border:1px solid #27303a; color:var(--fg); padding:6px 10px; border-radius:8px; text-decoration:none; font-size:13px; }
+    .btn:hover { border-color:#33506c; }
+    .count { font-size:11px; color:var(--muted); margin-left:6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>PDF Library</h1>
+    <div class="url">Repo: piratehive-commits / ollen → Project Pages at <code>/ollen/</code></div>
+  </header>
+
+  <div id="wrap">
+    <div id="left">
+      <input id="searchBox" type="search" placeholder="Search PDFs by name…" />
+      <div id="tree" class="tree"></div>
+      <div id="results"></div>
+    </div>
+
+    <div id="right">
+      <div id="viewerBar">
+        <div class="path" id="currentPath">Select a PDF to preview…</div>
+        <div>
+          <a id="openTab" class="btn" href="#" target="_blank" rel="noopener">Open in new tab</a>
+        </div>
+      </div>
+      <iframe id="viewer" title="PDF preview"></iframe>
+      <div id="help">
+        Tip: Click any PDF in the left panel to preview it here. Use the search box to jump directly.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const OWNER = 'piratehive-commits';
+    const REPO  = 'ollen';
+
+    const $tree = document.getElementById('tree');
+    const $results = document.getElementById('results');
+    const $viewer = document.getElementById('viewer');
+    const $currentPath = document.getElementById('currentPath');
+    const $openTab = document.getElementById('openTab');
+    const $search = document.getElementById('searchBox');
+
+    // Utility: encode each segment so spaces & symbols work in URLs
+    function pathToUrl(path) {
+      return path.split('/').map(encodeURIComponent).join('/');
+    }
+
+    function groupByFolders(pdfPaths) {
+      const root = { folders: new Map(), files: [] };
+      for (const p of pdfPaths) {
+        const segs = p.split('/');
+        let node = root;
+        for (let i=0; i<segs.length; i++) {
+          const seg = segs[i];
+          const isFile = (i === segs.length - 1);
+          if (isFile) node.files.push(p);
+          else {
+            if (!node.folders.has(seg)) node.folders.set(seg, { folders:new Map(), files:[] });
+            node = node.folders.get(seg);
+          }
+        }
+      }
+      return root;
+    }
+
+    function renderTree(node, prefix='') {
+      const ul = document.createElement('ul');
+
+      // Folders first, alphabetically
+      const folders = Array.from(node.folders.keys()).sort((a,b)=>a.localeCompare(b, undefined, {sensitivity:'base'}));
+      for (const folderName of folders) {
+        const child = node.folders.get(folderName);
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        const totalCount = countFiles(child);
+        summary.innerHTML = `📁 <span class="folder">${folderName}</span> <span class="count">(${totalCount})</span>`;
+        details.appendChild(summary);
+        details.appendChild(renderTree(child, prefix ? `${prefix}/${folderName}` : folderName));
+        ul.appendChild(details);
+      }
+
+      // Files
+      const files = node.files.slice().sort((a,b)=>a.localeCompare(b, undefined, {sensitivity:'base'}));
+      for (const p of files) {
+        const li = document.createElement('li');
+        li.className = 'file';
+        const a = document.createElement('a');
+        a.className = 'filelink';
+        a.href = pathToUrl(p);        // relative to the site root (project page)
+        a.textContent = p.split('/').pop();
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          showPreview(p);
+        });
+        li.appendChild(a);
+        ul.appendChild(li);
+      }
+
+      return ul;
+    }
+
+    function countFiles(node) {
+      let n = node.files.length;
+      for (const [,child] of node.folders) n += countFiles(child);
+      return n;
+    }
+
+    function buildSearchIndex(pdfPaths) {
+      return pdfPaths.map(p => ({
+        path: p,
+        name: p.split('/').pop().toLowerCase()
+      }));
+    }
+
+    function renderSearchResults(index, q) {
+      $results.innerHTML = '';
+      if (!q) return;
+      const ul = document.createElement('ul');
+      const needle = q.toLowerCase();
+      let hits = 0;
+      for (const item of index) {
+        if (item.name.includes(needle)) {
+          const li = document.createElement('li');
+          const a = document.createElement('a');
+          a.href = pathToUrl(item.path);
+          a.textContent = item.path;
+          a.addEventListener('click', (e)=>{ e.preventDefault(); showPreview(item.path); });
+          li.appendChild(a);
+          ul.appendChild(li);
+          hits++;
+          if (hits >= 200) break; // prevent overlong result lists
+        }
+      }
+      const title = document.createElement('div');
+      title.className = 'muted';
+      title.textContent = `Search results (${hits})`;
+      $results.appendChild(title);
+      $results.appendChild(ul);
+    }
+
+    function showPreview(path) {
+      const url = pathToUrl(path);
+      $viewer.src = url; // browser PDF viewer
+      $currentPath.textContent = path;
+      $openTab.href = url;
+    }
+
+    async function fetchJSON(u) {
+      const r = await fetch(u, { headers: { 'Accept': 'application/vnd.github+json' } });
+      if (!r.ok) throw new Error(`HTTP ${r.status} for ${u}`);
+      return r.json();
+    }
+
+    async function loadRepoTree() {
+      // 1) Repo meta → default branch
+      const repoMeta = await fetchJSON(`https://api.github.com/repos/${OWNER}/${REPO}`);
+      const defaultBranch = repoMeta.default_branch;
+
+      // 2) Branch info → commit SHA
+      const branch = await fetchJSON(`https://api.github.com/repos/${OWNER}/${REPO}/branches/${defaultBranch}`);
+      const sha = branch.commit.sha;
+
+      // 3) Full tree (recursive)
+      const tree = await fetchJSON(`https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${sha}?recursive=1`);
+      if (tree.truncated) {
+        console.warn('Git tree is truncated; consider non-recursive paging.');
+      }
+
+      const pdfPaths = tree.tree
+        .filter(t => t.type === 'blob' && t.path.toLowerCase().endsWith('.pdf'))
+        .map(t => t.path);
+
+      const grouped = groupByFolders(pdfPaths);
+      $tree.innerHTML = '';
+      $tree.appendChild(renderTree(grouped));
+
+      const index = buildSearchIndex(pdfPaths);
+      $search.addEventListener('input', () => renderSearchResults(index, $search.value));
+    }
+
+    loadRepoTree().catch(err => {
+      $tree.innerHTML = `<div class="muted">Error loading repository tree: ${err.message}.  
+      If this is a private repo or you hit rate limits, you’ll need to use a token.</div>`;
+    });
+  </script>
+</body>
+</html>
